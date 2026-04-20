@@ -45,12 +45,15 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
             _writer.Reset();
             _formatter.Format(logEvent, _writer);
 
-            string message = _writer.Finish();
+            string message = _writer.Finish().TrimEnd('\r', '\n');
 
             if (string.IsNullOrWhiteSpace(message))
                 return;
 
-            context.Output.WriteLine(message);
+            if (logEvent.Level >= LogEventLevel.Error)
+                Console.Error.WriteLine(message);
+            else
+                Console.WriteLine(message);
         }
         catch
         {
