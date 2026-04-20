@@ -13,7 +13,7 @@ namespace Soenneker.Serilog.Sinks.TUnit;
 ///<inheritdoc cref="ITUnitTestContextSink"/>
 public sealed class TUnitTestContextSink : ITUnitTestContextSink
 {
-    private const string _defaultTemplate = "[{Timestamp:HH:mm:ss.fff} {Level:u3}] {Message:lj}{NewLine}{Exception}";
+    private const string _defaultTemplate = "[{Timestamp:HH:mm:ss.fff} {Level:u3}] {Message:lj}{Exception}";
 
     private readonly ITextFormatter _formatter;
     private readonly ReusableStringWriter _writer = new();
@@ -45,7 +45,7 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
             _writer.Reset();
             _formatter.Format(logEvent, _writer);
 
-            string message = _writer.Finish().TrimEnd('\r', '\n');
+            string message = _writer.Finish();
 
             if (string.IsNullOrWhiteSpace(message))
                 return;
