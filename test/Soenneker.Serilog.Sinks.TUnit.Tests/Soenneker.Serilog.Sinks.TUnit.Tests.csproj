@@ -30,10 +30,4 @@
         <ProjectReference Include="..\..\src\Soenneker.Serilog.Sinks.TUnit\Soenneker.Serilog.Sinks.TUnit.csproj" />
     </ItemGroup>
 
-    <ItemGroup>
-        <Content Include="testconfig.json">
-            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-        </Content>
-    </ItemGroup>
-
 </Project>
