@@ -141,16 +141,17 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
                 return false;
 
             string testId = context.Metadata.TestDetails.TestId;
+            string snapshot = AppendAndSnapshot(isError ? _errorBuffers : _outputBuffers, testId, message, messageLength);
 
             if (!ShouldPublishImmediateUpdate(testId, throttle))
-                return false;
+                return true;
 
             var node = new TestNode
             {
                 Uid = new TestNodeUid(testId),
                 DisplayName = context.Metadata.DisplayName,
-                Properties = CreateProperties(isError ? null : AppendAndSnapshot(_outputBuffers, testId, message, messageLength),
-                    isError ? AppendAndSnapshot(_errorBuffers, testId, message, messageLength) : null)
+                Properties = CreateProperties(isError ? null : snapshot,
+                    isError ? snapshot : null)
             };
 
             _ = publishMethod.Invoke(messageBus, [node]);
