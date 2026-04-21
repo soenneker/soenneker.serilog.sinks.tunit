@@ -8,9 +8,9 @@ using System;
 using System.Collections.Concurrent;
 using System.Reflection;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Soenneker.Serilog.Sinks.TUnit.Abstract;
-using TUnit.Core.Logging;
 
 namespace Soenneker.Serilog.Sinks.TUnit;
 
@@ -21,6 +21,7 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
     private const string _defaultTemplate = "[{Timestamp:HH:mm:ss.fff} {Level:u3}] {Message:lj}{Exception}";
     private static readonly ConcurrentDictionary<string, StringBuilder> _outputBuffers = new();
     private static readonly ConcurrentDictionary<string, StringBuilder> _errorBuffers = new();
+    private static readonly ConcurrentDictionary<string, long> _lastImmediateUpdateTicks = new();
 
     private static readonly PropertyInfo? _serviceProviderProperty =
         typeof(TestContext).GetProperty("ServiceProvider", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
@@ -29,17 +30,27 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
     private static readonly ConcurrentDictionary<Type, MethodInfo?> _publishMethods = new();
 
     private readonly ITextFormatter _formatter;
+    private readonly TUnitTestContextSinkOptions _options;
     private readonly ReusableStringWriter _writer = new();
 
     private ValueAtomicBool _disposed;
 
-    public TUnitTestContextSink() : this(new MessageTemplateTextFormatter(_defaultTemplate, null))
+    public TUnitTestContextSink() : this(new MessageTemplateTextFormatter(_defaultTemplate, null), new TUnitTestContextSinkOptions())
     {
     }
 
-    public TUnitTestContextSink(ITextFormatter formatter)
+    public TUnitTestContextSink(ITextFormatter formatter) : this(formatter, new TUnitTestContextSinkOptions())
+    {
+    }
+
+    public TUnitTestContextSink(TUnitTestContextSinkOptions options) : this(new MessageTemplateTextFormatter(_defaultTemplate, null), options)
+    {
+    }
+
+    public TUnitTestContextSink(ITextFormatter formatter, TUnitTestContextSinkOptions options)
     {
         _formatter = formatter ?? throw new ArgumentNullException(nameof(formatter));
+        _options = options ?? throw new ArgumentNullException(nameof(options));
     }
 
     public void Emit(LogEvent? logEvent)
@@ -60,14 +71,15 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
 
             string message = _writer.Finish();
 
-            if (string.IsNullOrWhiteSpace(message))
+            int messageLength = GetMessageLengthWithoutTrailingNewLines(message);
+
+            if (messageLength == 0)
                 return;
 
-            if (TryPublishImmediateUpdate(context, message, logEvent.Level >= LogEventLevel.Error))
+            if (_options.EnableImmediateUpdates && TryPublishImmediateUpdate(context, message, messageLength, logEvent.Level >= LogEventLevel.Error, _options.ImmediateUpdateThrottle))
                 return;
 
-            DefaultLogger logger = context.GetDefaultLogger();
-            logger.Log(MapLevel(logEvent.Level), message, logEvent.Exception, static (state, _) => state);
+            WriteToTestOutput(context, message, messageLength, logEvent.Level >= LogEventLevel.Error);
         }
         catch
         {
@@ -103,7 +115,7 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
         }
     }
 
-    private static bool TryPublishImmediateUpdate(TestContext context, string message, bool isError)
+    private static bool TryPublishImmediateUpdate(TestContext context, string message, int messageLength, bool isError, TimeSpan throttle)
     {
         try
         {
@@ -130,12 +142,15 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
 
             string testId = context.Metadata.TestDetails.TestId;
 
+            if (!ShouldPublishImmediateUpdate(testId, throttle))
+                return false;
+
             var node = new TestNode
             {
                 Uid = new TestNodeUid(testId),
                 DisplayName = context.Metadata.DisplayName,
-                Properties = CreateProperties(isError ? null : AppendAndSnapshot(_outputBuffers, testId, message),
-                    isError ? AppendAndSnapshot(_errorBuffers, testId, message) : null)
+                Properties = CreateProperties(isError ? null : AppendAndSnapshot(_outputBuffers, testId, message, messageLength),
+                    isError ? AppendAndSnapshot(_errorBuffers, testId, message, messageLength) : null)
             };
 
             _ = publishMethod.Invoke(messageBus, [node]);
@@ -152,7 +167,44 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
         return _serviceProviderProperty?.GetValue(context) as IServiceProvider;
     }
 
-    private static string AppendAndSnapshot(ConcurrentDictionary<string, StringBuilder> buffers, string testId, string message)
+    private static bool ShouldPublishImmediateUpdate(string testId, TimeSpan throttle)
+    {
+        if (throttle <= TimeSpan.Zero)
+            return true;
+
+        long now = DateTime.UtcNow.Ticks;
+
+        while (true)
+        {
+            long previous = _lastImmediateUpdateTicks.GetOrAdd(testId, static _ => 0);
+
+            if (previous != 0 && now - previous < throttle.Ticks)
+                return false;
+
+            if (_lastImmediateUpdateTicks.TryUpdate(testId, now, previous))
+                return true;
+
+            if (previous == 0 && _lastImmediateUpdateTicks.TryAdd(testId, now))
+                return true;
+
+            Thread.SpinWait(1);
+        }
+    }
+
+    private static void WriteToTestOutput(TestContext context, string message, int messageLength, bool isError)
+    {
+        if (isError)
+        {
+            context.Output.ErrorOutput.Write(message.AsSpan(0, messageLength));
+            context.Output.ErrorOutput.WriteLine();
+            return;
+        }
+
+        context.Output.StandardOutput.Write(message.AsSpan(0, messageLength));
+        context.Output.StandardOutput.WriteLine();
+    }
+
+    private static string AppendAndSnapshot(ConcurrentDictionary<string, StringBuilder> buffers, string testId, string message, int messageLength)
     {
         StringBuilder builder = buffers.GetOrAdd(testId, static _ => new StringBuilder());
 
@@ -161,9 +213,29 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
             if (builder.Length > 0)
                 builder.AppendLine();
 
-            builder.Append(message);
+            builder.Append(message.AsSpan(0, messageLength));
             return builder.ToString();
         }
+    }
+
+    private static int GetMessageLengthWithoutTrailingNewLines(string message)
+    {
+        int length = message.Length;
+
+        while (length > 0)
+        {
+            char c = message[length - 1];
+
+            if (c is '\r' or '\n')
+            {
+                length--;
+                continue;
+            }
+
+            break;
+        }
+
+        return length;
     }
 
     private static PropertyBag CreateProperties(string? output, string? error)
@@ -183,17 +255,4 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
         return properties;
     }
 
-    private static LogLevel MapLevel(LogEventLevel level)
-    {
-        return level switch
-        {
-            LogEventLevel.Verbose => LogLevel.Trace,
-            LogEventLevel.Debug => LogLevel.Debug,
-            LogEventLevel.Information => LogLevel.Information,
-            LogEventLevel.Warning => LogLevel.Warning,
-            LogEventLevel.Error => LogLevel.Error,
-            LogEventLevel.Fatal => LogLevel.Critical,
-            _ => LogLevel.Information
-        };
-    }
 }

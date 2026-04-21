@@ -3,6 +3,7 @@ using Serilog;
 using System;
 using System.Diagnostics;
 using System.Threading.Tasks;
+using Serilog.Core;
 
 namespace Soenneker.Serilog.Sinks.TUnit.Tests;
 
@@ -14,10 +15,14 @@ public sealed class TUnitTestContextSinkTests
         const int iterations = 5;
         var stopwatch = Stopwatch.StartNew();
 
-        using var logger = new LoggerConfiguration()
-            .MinimumLevel.Verbose()
-            .WriteTo.Sink(new TUnitTestContextSink())
-            .CreateLogger();
+        await using Logger logger = new LoggerConfiguration()
+                                    .MinimumLevel.Verbose()
+                                    .WriteTo.Sink(new TUnitTestContextSink(new TUnitTestContextSinkOptions
+                                    {
+                                        EnableImmediateUpdates = true,
+                                        ImmediateUpdateThrottle = TimeSpan.FromMilliseconds(250)
+                                    }))
+                                    .CreateLogger();
 
         for (var i = 1; i <= iterations; i++)
         {
@@ -28,5 +33,27 @@ public sealed class TUnitTestContextSinkTests
         stopwatch.Stop();
 
         stopwatch.Elapsed.Should().BeGreaterThan(TimeSpan.FromSeconds(iterations - 1));
+    }
+
+    [Test]
+    public void Sink_should_handle_many_messages()
+    {
+        const int iterations = 20000;
+
+        using Logger logger = new LoggerConfiguration()
+                              .MinimumLevel.Verbose()
+                              .WriteTo.Sink(new TUnitTestContextSink(new TUnitTestContextSinkOptions
+                              {
+                                  EnableImmediateUpdates = true,
+                                  ImmediateUpdateThrottle = TimeSpan.FromMilliseconds(250)
+                              }))
+                              .CreateLogger();
+
+        for (var i = 1; i <= iterations; i++)
+        {
+            logger.Information("Bulk log {Iteration}/{Total}", i, iterations);
+        }
+
+        iterations.Should().Be(20000);
     }
 }

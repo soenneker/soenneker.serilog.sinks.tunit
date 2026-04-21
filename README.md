@@ -10,3 +10,25 @@
 ```
 dotnet add package Soenneker.Serilog.Sinks.TUnit
 ```
+
+## Usage
+
+Default usage enables live in-progress updates with a built-in `250ms` throttle:
+
+```csharp
+using var logger = new LoggerConfiguration()
+    .WriteTo.Sink(new TUnitTestContextSink())
+    .CreateLogger();
+```
+
+If you want to customize the live update behavior, pass options explicitly:
+
+```csharp
+using var logger = new LoggerConfiguration()
+    .WriteTo.Sink(new TUnitTestContextSink(new TUnitTestContextSinkOptions
+    {
+        EnableImmediateUpdates = true,
+        ImmediateUpdateThrottle = TimeSpan.FromMilliseconds(250)
+    }))
+    .CreateLogger();
+```
