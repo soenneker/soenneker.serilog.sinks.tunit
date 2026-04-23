@@ -35,8 +35,6 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
 
     private TestContext? _lastContext;
     private string? _lastTestId;
-    private bool _hasPendingOutputUpdate;
-    private bool _hasPendingErrorUpdate;
 
     private ValueAtomicBool _disposed;
 
@@ -81,11 +79,10 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
             if (messageLength == 0)
                 return;
 
-            if (_options.EnableImmediateUpdates && TryPublishImmediateUpdate(context, message, messageLength, logEvent.Level >= LogEventLevel.Error,
-                    _options.ImmediateUpdateThrottle))
-                return;
-
             WriteToTestOutput(context, message, messageLength, logEvent.Level >= LogEventLevel.Error);
+
+            if (_options.EnableImmediateUpdates)
+                TryPublishImmediateUpdate(context, message, messageLength, logEvent.Level >= LogEventLevel.Error, _options.ImmediateUpdateThrottle);
         }
         catch
         {
@@ -100,7 +97,7 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
 
         try
         {
-            FlushPendingImmediateUpdates();
+            ClearImmediateUpdate();
             await _writer.DisposeAsync().ConfigureAwait(false);
         }
         catch
@@ -115,7 +112,7 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
 
         try
         {
-            FlushPendingImmediateUpdates();
+            ClearImmediateUpdate();
             _writer.Dispose();
         }
         catch
@@ -154,21 +151,9 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
             _lastTestId = testId;
 
             if (!ShouldPublishImmediateUpdate(testId, throttle))
-            {
-                if (isError)
-                    _hasPendingErrorUpdate = true;
-                else
-                    _hasPendingOutputUpdate = true;
-
                 return true;
-            }
 
             PublishImmediateUpdate(context, publishMethod, messageBus, snapshot, isError);
-
-            if (isError)
-                _hasPendingErrorUpdate = false;
-            else
-                _hasPendingOutputUpdate = false;
 
             return true;
         }
@@ -178,14 +163,14 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
         }
     }
 
-    private void FlushPendingImmediateUpdates()
+    private void ClearImmediateUpdate()
     {
         try
         {
             TestContext? context = _lastContext ?? TestContext.Current;
             string? testId = _lastTestId;
 
-            if (context is null || testId is null || (!_hasPendingOutputUpdate && !_hasPendingErrorUpdate))
+            if (context is null || testId is null)
                 return;
 
             IServiceProvider? serviceProvider = GetServiceProvider(context);
@@ -209,31 +194,14 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
             if (publishMethod is null)
                 return;
 
-            if (_hasPendingOutputUpdate && _outputBuffers.TryGetValue(testId, out StringBuilder? outputBuilder))
+            var node = new TestNode
             {
-                string snapshot;
+                Uid = new TestNodeUid(testId),
+                DisplayName = context.Metadata.DisplayName,
+                Properties = new PropertyBag(InProgressTestNodeStateProperty.CachedInstance)
+            };
 
-                lock (outputBuilder)
-                {
-                    snapshot = outputBuilder.ToString();
-                }
-
-                PublishImmediateUpdate(context, publishMethod, messageBus, snapshot, false);
-                _hasPendingOutputUpdate = false;
-            }
-
-            if (_hasPendingErrorUpdate && _errorBuffers.TryGetValue(testId, out StringBuilder? errorBuilder))
-            {
-                string snapshot;
-
-                lock (errorBuilder)
-                {
-                    snapshot = errorBuilder.ToString();
-                }
-
-                PublishImmediateUpdate(context, publishMethod, messageBus, snapshot, true);
-                _hasPendingErrorUpdate = false;
-            }
+            _ = publishMethod.Invoke(messageBus, [node]);
         }
         catch
         {
