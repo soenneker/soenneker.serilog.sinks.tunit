@@ -56,4 +56,24 @@ public sealed class TUnitTestContextSinkTests
 
         iterations.Should().Be(20000);
     }
+
+    [Test]
+    public void Sink_should_write_final_logs_when_test_ends_immediately()
+    {
+        const string marker = "FINAL_TUNIT_OUTPUT_FLUSH_MARKER";
+
+        using Logger logger = new LoggerConfiguration()
+                              .MinimumLevel.Verbose()
+                              .WriteTo.Sink(new TUnitTestContextSink(new TUnitTestContextSinkOptions
+                              {
+                                  EnableImmediateUpdates = true,
+                                  ImmediateUpdateThrottle = TimeSpan.FromMinutes(1)
+                              }))
+                              .CreateLogger();
+
+        logger.Information("{Marker} first line", marker);
+        logger.Information("{Marker} second throttled line", marker);
+
+        marker.Should().Be("FINAL_TUNIT_OUTPUT_FLUSH_MARKER");
+    }
 }

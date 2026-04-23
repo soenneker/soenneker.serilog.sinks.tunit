@@ -33,6 +33,11 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
     private readonly TUnitTestContextSinkOptions _options;
     private readonly ReusableStringWriter _writer = new();
 
+    private TestContext? _lastContext;
+    private string? _lastTestId;
+    private bool _hasPendingOutputUpdate;
+    private bool _hasPendingErrorUpdate;
+
     private ValueAtomicBool _disposed;
 
     public TUnitTestContextSink() : this(new MessageTemplateTextFormatter(_defaultTemplate, null), new TUnitTestContextSinkOptions())
@@ -76,7 +81,8 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
             if (messageLength == 0)
                 return;
 
-            if (_options.EnableImmediateUpdates && TryPublishImmediateUpdate(context, message, messageLength, logEvent.Level >= LogEventLevel.Error, _options.ImmediateUpdateThrottle))
+            if (_options.EnableImmediateUpdates && TryPublishImmediateUpdate(context, message, messageLength, logEvent.Level >= LogEventLevel.Error,
+                    _options.ImmediateUpdateThrottle))
                 return;
 
             WriteToTestOutput(context, message, messageLength, logEvent.Level >= LogEventLevel.Error);
@@ -94,6 +100,7 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
 
         try
         {
+            FlushPendingImmediateUpdates();
             await _writer.DisposeAsync().ConfigureAwait(false);
         }
         catch
@@ -108,6 +115,7 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
 
         try
         {
+            FlushPendingImmediateUpdates();
             _writer.Dispose();
         }
         catch
@@ -115,7 +123,7 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
         }
     }
 
-    private static bool TryPublishImmediateUpdate(TestContext context, string message, int messageLength, bool isError, TimeSpan throttle)
+    private bool TryPublishImmediateUpdate(TestContext context, string message, int messageLength, bool isError, TimeSpan throttle)
     {
         try
         {
@@ -142,25 +150,107 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
 
             string testId = context.Metadata.TestDetails.TestId;
             string snapshot = AppendAndSnapshot(isError ? _errorBuffers : _outputBuffers, testId, message, messageLength);
+            _lastContext = context;
+            _lastTestId = testId;
 
             if (!ShouldPublishImmediateUpdate(testId, throttle))
-                return true;
-
-            var node = new TestNode
             {
-                Uid = new TestNodeUid(testId),
-                DisplayName = context.Metadata.DisplayName,
-                Properties = CreateProperties(isError ? null : snapshot,
-                    isError ? snapshot : null)
-            };
+                if (isError)
+                    _hasPendingErrorUpdate = true;
+                else
+                    _hasPendingOutputUpdate = true;
 
-            _ = publishMethod.Invoke(messageBus, [node]);
+                return true;
+            }
+
+            PublishImmediateUpdate(context, publishMethod, messageBus, snapshot, isError);
+
+            if (isError)
+                _hasPendingErrorUpdate = false;
+            else
+                _hasPendingOutputUpdate = false;
+
             return true;
         }
         catch
         {
             return false;
         }
+    }
+
+    private void FlushPendingImmediateUpdates()
+    {
+        try
+        {
+            TestContext? context = _lastContext ?? TestContext.Current;
+            string? testId = _lastTestId;
+
+            if (context is null || testId is null || (!_hasPendingOutputUpdate && !_hasPendingErrorUpdate))
+                return;
+
+            IServiceProvider? serviceProvider = GetServiceProvider(context);
+
+            if (serviceProvider is null)
+                return;
+
+            Type? messageBusType = _messageBusTypes.GetOrAdd(serviceProvider.GetType(), static type => type.Assembly.GetType("TUnit.Engine.TUnitMessageBus"));
+
+            if (messageBusType is null)
+                return;
+
+            object? messageBus = serviceProvider.GetService(messageBusType);
+
+            if (messageBus is null)
+                return;
+
+            MethodInfo? publishMethod = _publishMethods.GetOrAdd(messageBusType,
+                static type => type.GetMethod("PublishOutputUpdate", BindingFlags.Instance | BindingFlags.Public));
+
+            if (publishMethod is null)
+                return;
+
+            if (_hasPendingOutputUpdate && _outputBuffers.TryGetValue(testId, out StringBuilder? outputBuilder))
+            {
+                string snapshot;
+
+                lock (outputBuilder)
+                {
+                    snapshot = outputBuilder.ToString();
+                }
+
+                PublishImmediateUpdate(context, publishMethod, messageBus, snapshot, false);
+                _hasPendingOutputUpdate = false;
+            }
+
+            if (_hasPendingErrorUpdate && _errorBuffers.TryGetValue(testId, out StringBuilder? errorBuilder))
+            {
+                string snapshot;
+
+                lock (errorBuilder)
+                {
+                    snapshot = errorBuilder.ToString();
+                }
+
+                PublishImmediateUpdate(context, publishMethod, messageBus, snapshot, true);
+                _hasPendingErrorUpdate = false;
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private static void PublishImmediateUpdate(TestContext context, MethodInfo publishMethod, object messageBus, string snapshot, bool isError)
+    {
+        var node = new TestNode
+        {
+            Uid = new TestNodeUid(context.Metadata.TestDetails.TestId),
+            DisplayName = context.Metadata.DisplayName,
+            Properties = CreateProperties(isError ? null : snapshot,
+                isError ? snapshot : null)
+        };
+
+        _ = publishMethod.Invoke(messageBus, [node]);
     }
 
     private static IServiceProvider? GetServiceProvider(TestContext context)
