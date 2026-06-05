@@ -105,6 +105,9 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
         }
     }
 
+    /// <summary>
+    /// Releases resources used by the current instance.
+    /// </summary>
     public void Dispose()
     {
         if (!_disposed.TrySetTrue())
