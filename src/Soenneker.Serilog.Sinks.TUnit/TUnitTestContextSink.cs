@@ -50,6 +50,10 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
         _options = options ?? throw new ArgumentNullException(nameof(options));
     }
 
+    /// <summary>
+    /// Emit on the T Unit Test Context Sink.
+    /// </summary>
+    /// <param name="logEvent">Log Event for the emit operation.</param>
     public void Emit(LogEvent? logEvent)
     {
         if (logEvent is null || _disposed.Value)
