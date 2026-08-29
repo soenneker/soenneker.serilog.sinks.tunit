@@ -21,8 +21,8 @@ public interface ITUnitTestContextSink : ILogEventSink, IAsyncDisposable, IDispo
     new void Emit(LogEvent logEvent);
 
     /// <summary>
-    /// This is idempotent... but you should avoid calling it explicitly because it'll get disposed from Serilog if it's been registered.  
+    /// Flushes buffered test output and releases sink resources. The operation is idempotent; Serilog normally calls it during disposal.
     /// </summary>
-    /// <returns></returns>
+    /// <returns>A task that completes after buffered output has been flushed.</returns>
     new ValueTask DisposeAsync();
 }

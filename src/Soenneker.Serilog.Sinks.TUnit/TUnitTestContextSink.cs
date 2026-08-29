@@ -14,7 +14,7 @@ using Soenneker.Serilog.Sinks.TUnit.Dtos;
 namespace Soenneker.Serilog.Sinks.TUnit;
 
 // ReSharper disable once InconsistentNaming
-///<inheritdoc cref="ITUnitTestContextSink"/>
+/// <inheritdoc cref="ITUnitTestContextSink"/>
 public sealed class TUnitTestContextSink : ITUnitTestContextSink
 {
     private const string _defaultTemplate = "[{Timestamp:HH:mm:ss.fff} {Level:u3}] {Message:lj}{Exception}";
