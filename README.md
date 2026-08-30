@@ -1,42 +1,78 @@
 [![](https://img.shields.io/nuget/v/soenneker.serilog.sinks.tunit.svg?style=for-the-badge)](https://www.nuget.org/packages/soenneker.serilog.sinks.tunit/)
 [![](https://img.shields.io/github/actions/workflow/status/soenneker/soenneker.serilog.sinks.tunit/publish-package.yml?style=for-the-badge)](https://github.com/soenneker/soenneker.serilog.sinks.tunit/actions/workflows/publish-package.yml)
-[![](https://img.shields.io/nuget/dt/soenneker.serilog.sinks.tunit.svg?style=for-the-badge)](https://www.nuget.org/packages/soenneker.serilog.sinks.tunit/)
+[![](https://img.shields.io/nuget/dt/soenneker.serilog.sinks.tunit.svg?style=for-the-badge)](https://www.nuget.org/packages/soenneker/soenneker.serilog.sinks.tunit/)
+[![](https://img.shields.io/github/actions/workflow/status/soenneker/soenneker.serilog.sinks.tunit/codeql.yml?label=CodeQL&style=for-the-badge)](https://github.com/soenneker/soenneker.serilog.sinks.tunit/actions/workflows/codeql.yml)
 
 # Soenneker.Serilog.Sinks.TUnit
 
-Serilog sink that writes formatted log events to the current TUnit `TestContext` output. Uses `ReusableStringWriter` to avoid per-log allocations.
+A Serilog sink that writes each event to the active TUnit test's standard or error output.
 
-## Install
+## Installation
 
 ```bash
 dotnet add package Soenneker.Serilog.Sinks.TUnit
 ```
 
-## Quick start
+## Configure Serilog
+
+Create the sink once in your test assembly setup and add it to the logger:
 
 ```csharp
-using Soenneker.Serilog.Sinks.TUnit.Abstract;
+using Serilog;
+using Soenneker.Serilog.Sinks.TUnit;
 
-ITUnitTestContextSink tUnitTestContextSink = /* resolve from DI */;
-tUnitTestContextSink.Emit(/* supply logEvent */ default!);
+var sink = new TUnitTestContextSink(new TUnitTestContextSinkOptions
+{
+    EnableImmediateUpdates = true,
+    ImmediateUpdateThrottle = TimeSpan.FromMilliseconds(250)
+});
+
+Log.Logger = new LoggerConfiguration()
+    .MinimumLevel.Debug()
+    .WriteTo.Sink(sink)
+    .CreateLogger();
 ```
 
-Emits the event unless testOutputHelper is null. In that case, it caches it for later (and then emits them all when it's not) Will NOT cache IMessageSink log events.
+Serilog events emitted while `TestContext.Current` is available are attached to that test. Error and fatal events go to TUnit's error output; all lower levels go to standard output.
 
-## What you get
+Events emitted without an active `TestContext` are discarded. The sink does not queue them for a later test. This matters for background work that outlives the test or runs outside its execution context—await that work before the test completes if its logs are needed.
 
-- `ITUnitTestContextSink` — Serilog sink that writes formatted log events to the current TUnit `TestContext` output. Uses `ReusableStringWriter` to avoid per-log allocations.
-- `TUnitTestContextSinkOptions` — Configuration for `TUnitTestContextSink`.
+The default format is:
 
-## API at a glance
+```text
+[{Timestamp:HH:mm:ss.fff} {Level:u3}] {Message:lj}{Exception}
+```
 
-| API | What it does | Result / important behavior |
-| --- | --- | --- |
-| `ITUnitTestContextSink.Emit(logEvent)` | Emits the event unless testOutputHelper is null. In that case, it caches it for later (and then emits them all when it's not) Will NOT cache IMessageSink log events. | Returns no value; the requested change is complete when the method returns. |
-| `ITUnitTestContextSink.DisposeAsync()` | Flushes buffered test output and releases sink resources. The operation is idempotent; Serilog normally calls it during disposal. | A task that completes after buffered output has been flushed. |
-| `TUnitTestContextSinkOptions.EnableImmediateUpdates` | Enables live output updates through TUnit's message bus. This can significantly slow down IDE test runners when a test emits many log lines. | Enables live output updates through TUnit's message bus. This can significantly slow down IDE test runners when a test emits many log lines. |
-| `TUnitTestContextSinkOptions.ImmediateUpdateThrottle` | The minimum interval between live output updates for a single test when `EnableImmediateUpdates` is enabled. | The minimum interval between live output updates for a single test when `EnableImmediateUpdates` is enabled. |
+Supply any Serilog `ITextFormatter` when a different representation is needed:
 
-## Practical notes
+```csharp
+var formatter = new MessageTemplateTextFormatter(
+    "{Timestamp:O} [{Level:u3}] {Message:lj}{NewLine}{Exception}");
 
-- Dispose instances you own when their scope ends so held resources can be released.
+var sink = new TUnitTestContextSink(formatter, options);
+```
+
+## Immediate IDE updates
+
+`EnableImmediateUpdates` publishes snapshots of the current test output through TUnit's message bus so supported runners can display logs while the test is still running. It is enabled by default and throttled to one update per test every 250 ms.
+
+This feature depends on TUnit engine services discovered at runtime. If they are unavailable, normal test output still works. For high-volume logging or runners that become slow while refreshing output, disable immediate updates:
+
+```csharp
+var sink = new TUnitTestContextSink(new TUnitTestContextSinkOptions
+{
+    EnableImmediateUpdates = false
+});
+```
+
+`ImmediateUpdateThrottle` values at or below zero publish after every accepted event and can be expensive.
+
+## Teardown
+
+Dispose the logger during test assembly teardown:
+
+```csharp
+await Log.CloseAndFlushAsync();
+```
+
+The sink's synchronous and asynchronous disposal paths are idempotent. Formatting and TUnit output failures are intentionally swallowed so logging cannot fail a test.

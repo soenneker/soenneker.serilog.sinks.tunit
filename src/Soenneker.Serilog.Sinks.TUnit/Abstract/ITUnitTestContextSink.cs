@@ -2,20 +2,17 @@ using Serilog.Core;
 using Serilog.Events;
 using System;
 using System.Threading.Tasks;
-using Soenneker.Utils.ReusableStringWriter;
 
 namespace Soenneker.Serilog.Sinks.TUnit.Abstract;
 
 /// <summary>
-/// Serilog sink that writes formatted log events to the current TUnit <see cref="TestContext"/> output.
-/// Uses <see cref="ReusableStringWriter"/> to avoid per-log allocations.
+/// A Serilog sink that writes formatted events to the active TUnit <see cref="TestContext"/>.
 /// </summary>
 public interface ITUnitTestContextSink : ILogEventSink, IAsyncDisposable, IDisposable
 {
     /// <summary>
-    ///     Emits the event unless testOutputHelper is null. In that case, it caches it for later (and then emits them all when
-    ///     it's not) <para/>
-    ///     Will NOT cache IMessageSink log events.
+    /// Writes the event to the current test's error output when its level is error or higher, or to standard output otherwise.
+    /// Events are ignored when there is no active <see cref="TestContext"/>.
     /// </summary>
     /// <param name="logEvent">The event being logged</param>
     new void Emit(LogEvent logEvent);
