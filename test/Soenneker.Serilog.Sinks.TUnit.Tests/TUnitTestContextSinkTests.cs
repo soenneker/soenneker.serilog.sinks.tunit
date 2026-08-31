@@ -76,4 +76,25 @@ public sealed class TUnitTestContextSinkTests
 
         marker.Should().Be("FINAL_TUNIT_OUTPUT_FLUSH_MARKER");
     }
+
+    [Test]
+    public void Sink_should_preserve_both_output_channels()
+    {
+        const string standardMarker = "STANDARD_OUTPUT_MARKER";
+        const string errorMarker = "ERROR_OUTPUT_MARKER";
+
+        using Logger logger = new LoggerConfiguration()
+                              .WriteTo.Sink(new TUnitTestContextSink(new TUnitTestContextSinkOptions
+                              {
+                                  EnableImmediateUpdates = true,
+                                  ImmediateUpdateThrottle = TimeSpan.FromMinutes(1)
+                              }))
+                              .CreateLogger();
+
+        logger.Information("{Marker}", standardMarker);
+        logger.Error("{Marker}", errorMarker);
+
+        TestContext.Current!.GetStandardOutput().Should().Contain(standardMarker);
+        TestContext.Current.GetErrorOutput().Should().Contain(errorMarker);
+    }
 }

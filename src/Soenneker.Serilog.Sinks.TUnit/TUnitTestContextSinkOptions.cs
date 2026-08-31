@@ -15,6 +15,7 @@ public sealed class TUnitTestContextSinkOptions
 
     /// <summary>
     /// The minimum interval between live output updates for a single test when <see cref="EnableImmediateUpdates"/> is enabled.
+    /// Error and fatal events bypass this throttle so their output is available if the test host terminates unexpectedly.
     /// </summary>
     public TimeSpan ImmediateUpdateThrottle { get; set; } = TimeSpan.FromMilliseconds(250);
 }

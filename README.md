@@ -65,7 +65,7 @@ var sink = new TUnitTestContextSink(new TUnitTestContextSinkOptions
 });
 ```
 
-`ImmediateUpdateThrottle` values at or below zero publish after every accepted event and can be expensive.
+Error and fatal events bypass `ImmediateUpdateThrottle` so failure details are published immediately. Values at or below zero publish every accepted event and can be expensive.
 
 ## Teardown
 

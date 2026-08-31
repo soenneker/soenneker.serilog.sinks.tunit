@@ -128,7 +128,9 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
     {
         try
         {
-            if (!ShouldPublishImmediateUpdate(context, throttle))
+            // Error output is the most useful output when the test host terminates before TUnit
+            // can publish its final test node, so never hide it behind the live-update throttle.
+            if (!isError && !ShouldPublishImmediateUpdate(context, throttle))
                 return true;
 
             IServiceProvider? serviceProvider = GetServiceProvider(context);
@@ -154,8 +156,10 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
             if (messageBus is null)
                 return false;
 
-            string snapshot = isError ? context.GetErrorOutput() : context.GetStandardOutput();
-            PublishImmediateUpdate(context, publisher.PublishInvoker, messageBus, snapshot, isError);
+            string output = context.GetStandardOutput();
+            string error = context.GetErrorOutput();
+
+            PublishImmediateUpdate(context, publisher.PublishInvoker, messageBus, output, error);
 
             return true;
         }
@@ -181,16 +185,40 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
     }
 
     private static void PublishImmediateUpdate(TestContext context, MethodInvoker publishInvoker, object messageBus,
-        string snapshot, bool isError)
+        string output, string error)
     {
         var node = new TestNode
         {
             Uid = new TestNodeUid(context.Metadata.TestDetails.TestId),
             DisplayName = context.Metadata.DisplayName,
-            Properties = CreateProperties(isError ? null : snapshot, isError ? snapshot : null)
+            Properties = CreateProperties(output, error)
         };
 
-        _ = publishInvoker.Invoke(messageBus, node);
+        WaitForPublishCompletion(publishInvoker.Invoke(messageBus, node));
+
+        // JetBrains runners combine consecutive in-progress output updates. An empty follow-up
+        // node prevents the next cumulative snapshot from duplicating or replacing a channel.
+        var heartbeat = new TestNode
+        {
+            Uid = node.Uid,
+            DisplayName = node.DisplayName,
+            Properties = new PropertyBag(InProgressTestNodeStateProperty.CachedInstance)
+        };
+
+        WaitForPublishCompletion(publishInvoker.Invoke(messageBus, heartbeat));
+    }
+
+    private static void WaitForPublishCompletion(object? invocationResult)
+    {
+        switch (invocationResult)
+        {
+            case ValueTask valueTask:
+                valueTask.GetAwaiter().GetResult();
+                break;
+            case Task task:
+                task.GetAwaiter().GetResult();
+                break;
+        }
     }
 
     private static IServiceProvider? GetServiceProvider(TestContext context)
