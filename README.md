@@ -54,7 +54,9 @@ var sink = new TUnitTestContextSink(formatter, options);
 
 ## Immediate IDE updates
 
-`EnableImmediateUpdates` publishes snapshots of the current test output through TUnit's message bus so supported runners can display logs while the test is still running. It is enabled by default and throttled to one update per test every 250 ms.
+`EnableImmediateUpdates` publishes cumulative snapshots of the current test output through TUnit's message bus so supported runners can display logs while the test is still running. It is enabled by default and throttled to one update per test every 250 ms.
+
+Formatting and TUnit output capture stay on the logging thread. Snapshot creation and message-bus publication run on a single background worker, with at most one queued update per test. Messages received inside the throttle interval are included in a trailing update; error and fatal events wake the publisher immediately.
 
 This feature depends on TUnit engine services discovered at runtime. If they are unavailable, normal test output still works. For high-volume logging or runners that become slow while refreshing output, disable immediate updates:
 
@@ -65,7 +67,7 @@ var sink = new TUnitTestContextSink(new TUnitTestContextSinkOptions
 });
 ```
 
-Error and fatal events bypass `ImmediateUpdateThrottle` so failure details are published immediately. Values at or below zero publish every accepted event and can be expensive.
+Values at or below zero allow every dirty test to be published without a throttle and can be expensive. The configured options are captured when the sink is constructed.
 
 ## Teardown
 

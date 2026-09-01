@@ -2,6 +2,7 @@ using AwesomeAssertions;
 using Serilog;
 using System;
 using System.Diagnostics;
+using System.Linq;
 using System.Threading.Tasks;
 using Serilog.Core;
 
@@ -96,5 +97,49 @@ public sealed class TUnitTestContextSinkTests
 
         TestContext.Current!.GetStandardOutput().Should().Contain(standardMarker);
         TestContext.Current.GetErrorOutput().Should().Contain(errorMarker);
+    }
+
+    [Test]
+    public void Sink_should_write_concurrent_events_as_atomic_lines()
+    {
+        const int iterations = 4000;
+        const string marker = "ATOMIC_TUNIT_LINE";
+
+        using Logger logger = new LoggerConfiguration()
+                              .WriteTo.Sink(new TUnitTestContextSink(new TUnitTestContextSinkOptions
+                              {
+                                  EnableImmediateUpdates = false
+                              }))
+                              .CreateLogger();
+
+        Parallel.For(0, iterations, i => logger.Information("{Marker}:{Index:D5}", marker, i));
+
+        string[] lines = TestContext.Current!.GetStandardOutput()
+                                            .Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries)
+                                            .Where(line => line.Contains(marker, StringComparison.Ordinal))
+                                            .ToArray();
+
+        lines.Should().HaveCount(iterations);
+        lines.Select(line => line[(line.IndexOf(marker, StringComparison.Ordinal) + marker.Length + 1)..])
+             .Distinct(StringComparer.Ordinal)
+             .Should()
+             .HaveCount(iterations);
+    }
+
+    [Test]
+    public void Sink_should_put_exceptions_on_the_next_line()
+    {
+        using Logger logger = new LoggerConfiguration()
+                              .WriteTo.Sink(new TUnitTestContextSink(new TUnitTestContextSinkOptions
+                              {
+                                  EnableImmediateUpdates = false
+                              }))
+                              .CreateLogger();
+
+        logger.Error(new InvalidOperationException("EXPECTED_EXCEPTION_TEXT"), "EXPECTED_FAILURE_MESSAGE");
+
+        TestContext.Current!.GetErrorOutput()
+                   .Should()
+                   .Contain($"EXPECTED_FAILURE_MESSAGE{Environment.NewLine}System.InvalidOperationException: EXPECTED_EXCEPTION_TEXT");
     }
 }

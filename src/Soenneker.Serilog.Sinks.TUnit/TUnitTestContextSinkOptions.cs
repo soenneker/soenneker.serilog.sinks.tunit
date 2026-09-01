@@ -8,14 +8,14 @@ namespace Soenneker.Serilog.Sinks.TUnit;
 public sealed class TUnitTestContextSinkOptions
 {
     /// <summary>
-    /// Enables live output updates through TUnit's message bus.
-    /// This can significantly slow down IDE test runners when a test emits many log lines.
+    /// Enables coalesced live output updates through TUnit's message bus.
+    /// Publication occurs on a background worker and does not block the logging thread.
     /// </summary>
     public bool EnableImmediateUpdates { get; set; } = true;
 
     /// <summary>
     /// The minimum interval between live output updates for a single test when <see cref="EnableImmediateUpdates"/> is enabled.
-    /// Error and fatal events bypass this throttle so their output is available if the test host terminates unexpectedly.
+    /// A trailing update publishes messages received during the interval. Error and fatal events wake the publisher immediately.
     /// </summary>
     public TimeSpan ImmediateUpdateThrottle { get; set; } = TimeSpan.FromMilliseconds(250);
 }

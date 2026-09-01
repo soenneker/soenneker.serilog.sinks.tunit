@@ -1,15 +1,20 @@
 using Microsoft.Testing.Platform.Extensions.Messages;
+using Serilog.Debugging;
 using Serilog.Events;
 using Serilog.Formatting;
 using Serilog.Formatting.Display;
 using Soenneker.Atomics.ValueBools;
-using Soenneker.Utils.ReusableStringWriter;
-using System;
-using System.Reflection;
-using System.Threading;
-using System.Threading.Tasks;
 using Soenneker.Serilog.Sinks.TUnit.Abstract;
 using Soenneker.Serilog.Sinks.TUnit.Dtos;
+using Soenneker.Utils.ReusableStringWriter;
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace Soenneker.Serilog.Sinks.TUnit;
 
@@ -17,79 +22,101 @@ namespace Soenneker.Serilog.Sinks.TUnit;
 /// <inheritdoc cref="ITUnitTestContextSink"/>
 public sealed class TUnitTestContextSink : ITUnitTestContextSink
 {
-    private const string _defaultTemplate = "[{Timestamp:HH:mm:ss.fff} {Level:u3}] {Message:lj}{Exception}";
-    private const string _immediateUpdateStateKey = "Soenneker.Serilog.Sinks.TUnit.ImmediateUpdateState";
+    private const string _defaultTemplate = "[{Timestamp:HH:mm:ss.fff} {Level:u3}] {Message:lj}";
+    private static readonly long _priorityThrottleTimestampTicks = Math.Max(1, Stopwatch.Frequency / 20);
 
     private static readonly PropertyInfo? _serviceProviderProperty = typeof(TestContext).GetProperty("ServiceProvider",
         BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
 
     private readonly ITextFormatter _formatter;
-    private readonly TUnitTestContextSinkOptions _options;
-    private readonly ReusableStringWriter _writer = new();
+    private readonly bool _appendException;
+    private readonly bool _immediateUpdatesEnabled;
+    private readonly long _throttleTimestampTicks;
+    private readonly ConcurrentBag<ReusableStringWriter> _writers = new();
+    private readonly ConditionalWeakTable<TestContext, ImmediateUpdateState> _states = new();
+    private readonly ConcurrentQueue<ImmediateUpdateState> _pendingUpdates = new();
+    private readonly SemaphoreSlim? _publisherSignal;
+    private readonly Task? _publisherTask;
 
     private ImmediateUpdatePublisher? _immediateUpdatePublisher;
     private ValueAtomicBool _disposed;
+    private int _activeEmits;
+    private int _publisherFailureReported;
 
     public TUnitTestContextSink() : this(new MessageTemplateTextFormatter(_defaultTemplate, null),
-        new TUnitTestContextSinkOptions())
+        new TUnitTestContextSinkOptions(), true)
     {
     }
 
-    public TUnitTestContextSink(ITextFormatter formatter) : this(formatter, new TUnitTestContextSinkOptions())
+    public TUnitTestContextSink(ITextFormatter formatter) : this(formatter, new TUnitTestContextSinkOptions(), false)
     {
     }
 
     public TUnitTestContextSink(TUnitTestContextSinkOptions options) : this(
-        new MessageTemplateTextFormatter(_defaultTemplate, null), options)
+        new MessageTemplateTextFormatter(_defaultTemplate, null), options, true)
     {
     }
 
-    public TUnitTestContextSink(ITextFormatter formatter, TUnitTestContextSinkOptions options)
+    public TUnitTestContextSink(ITextFormatter formatter, TUnitTestContextSinkOptions options) : this(formatter, options, false)
+    {
+    }
+
+    private TUnitTestContextSink(ITextFormatter formatter, TUnitTestContextSinkOptions options, bool appendException)
     {
         _formatter = formatter ?? throw new ArgumentNullException(nameof(formatter));
-        _options = options ?? throw new ArgumentNullException(nameof(options));
+        ArgumentNullException.ThrowIfNull(options);
+
+        _appendException = appendException;
+        _immediateUpdatesEnabled = options.EnableImmediateUpdates;
+        _throttleTimestampTicks = GetThrottleTimestampTicks(options.ImmediateUpdateThrottle);
+
+        if (_immediateUpdatesEnabled)
+        {
+            _publisherSignal = new SemaphoreSlim(0);
+            _publisherTask = Task.Run(PublishUpdatesAsync);
+        }
     }
 
-    /// <summary>
-    /// Emit on the T Unit Test Context Sink.
-    /// </summary>
-    /// <param name="logEvent">Log Event for the emit operation.</param>
     public void Emit(LogEvent? logEvent)
     {
-        if (logEvent is null || _disposed.Value)
+        if (logEvent is null)
             return;
 
-        TestContext? context = TestContext.Current;
-
-        // We'll think on this later
-        if (context is null)
-            return;
+        Interlocked.Increment(ref _activeEmits);
 
         try
         {
-            string message;
+            if (_disposed.Value)
+                return;
 
-            lock (_writer)
-            {
-                _writer.Reset();
-                _formatter.Format(logEvent, _writer);
-                message = _writer.Finish();
-            }
+            TestContext? context = TestContext.Current;
 
+            if (context is null)
+                return;
+
+            string message = Format(logEvent);
             int messageLength = GetMessageLengthWithoutTrailingNewLines(message);
 
             if (messageLength == 0)
                 return;
 
-            bool isError = logEvent.Level >= LogEventLevel.Error;
-            WriteToTestOutput(context, message, messageLength, isError);
+            if (messageLength != message.Length)
+                message = message[..messageLength];
 
-            if (_options.EnableImmediateUpdates)
-                TryPublishImmediateUpdate(context, isError, _options.ImmediateUpdateThrottle);
+            bool isError = logEvent.Level >= LogEventLevel.Error;
+            WriteToTestOutput(context, message, isError);
+
+            if (_immediateUpdatesEnabled)
+                QueueImmediateUpdate(context, isError);
         }
         catch
         {
             // Never let logging affect test execution.
+        }
+        finally
+        {
+            if (Interlocked.Decrement(ref _activeEmits) == 0 && _disposed.Value)
+                SignalPublisher();
         }
     }
 
@@ -98,75 +125,254 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
         if (!_disposed.TrySetTrue())
             return;
 
-        try
-        {
-            await _writer.DisposeAsync().ConfigureAwait(false);
-        }
-        catch
-        {
-        }
+        await StopPublisherAsync().ConfigureAwait(false);
+        DisposeWriters();
     }
 
-    /// <summary>
-    /// Releases resources used by the current instance.
-    /// </summary>
     public void Dispose()
     {
         if (!_disposed.TrySetTrue())
             return;
 
+        StopPublisher();
+        DisposeWriters();
+    }
+
+    private string Format(LogEvent logEvent)
+    {
+        if (!_writers.TryTake(out ReusableStringWriter? writer))
+            writer = new ReusableStringWriter();
+
         try
         {
-            _writer.Dispose();
+            writer.Reset();
+            _formatter.Format(logEvent, writer);
+            string message = writer.Finish();
+
+            return _appendException && logEvent.Exception is not null
+                ? string.Concat(message, Environment.NewLine, logEvent.Exception.ToString())
+                : message;
         }
-        catch
+        finally
         {
+            if (_disposed.Value)
+                writer.Dispose();
+            else
+                _writers.Add(writer);
         }
     }
 
-    private bool TryPublishImmediateUpdate(TestContext context, bool isError, TimeSpan throttle)
+    private void QueueImmediateUpdate(TestContext context, bool isPriority)
     {
+        // TUnit's final node contains the authoritative captured output. Publishing another
+        // in-progress node after that point can corrupt a stateful IDE runner's test state.
+        if (context.Execution.Result is not null)
+            return;
+
+        ImmediateUpdateState state = _states.GetValue(context, static current => new ImmediateUpdateState(current));
+        state.MarkDirty(isPriority);
+
+        bool queued = state.TryQueue();
+
+        if (queued)
+        {
+            _pendingUpdates.Enqueue(state);
+            SignalPublisher();
+        }
+        else if (isPriority && state.TryRequestPriorityWake())
+            SignalPublisher();
+    }
+
+    private async Task PublishUpdatesAsync()
+    {
+        var scheduled = new List<ImmediateUpdateState>();
+
         try
         {
-            // Error output is the most useful output when the test host terminates before TUnit
-            // can publish its final test node, so never hide it behind the live-update throttle.
-            if (!isError && !ShouldPublishImmediateUpdate(context, throttle))
-                return true;
-
-            IServiceProvider? serviceProvider = GetServiceProvider(context);
-
-            if (serviceProvider is null)
-                return false;
-
-            Type serviceProviderType = serviceProvider.GetType();
-            ImmediateUpdatePublisher? publisher = Volatile.Read(ref _immediateUpdatePublisher);
-
-            if (publisher is null || publisher.ServiceProviderType != serviceProviderType)
+            while (true)
             {
-                publisher = CreateImmediateUpdatePublisher(serviceProviderType);
+                DrainPendingUpdates(scheduled);
 
-                if (publisher is null)
-                    return false;
+                if (_disposed.Value)
+                {
+                    for (int i = scheduled.Count - 1; i >= 0; i--)
+                    {
+                        await PublishStateAsync(scheduled[i]).ConfigureAwait(false);
+                        scheduled.RemoveAt(i);
+                    }
 
-                Volatile.Write(ref _immediateUpdatePublisher, publisher);
+                    DrainPendingUpdates(scheduled);
+
+                    if (scheduled.Count == 0)
+                    {
+                        if (Volatile.Read(ref _activeEmits) == 0)
+                            break;
+
+                        await _publisherSignal!.WaitAsync().ConfigureAwait(false);
+                    }
+
+                    continue;
+                }
+
+                long now = Stopwatch.GetTimestamp();
+
+                for (int i = scheduled.Count - 1; i >= 0; i--)
+                {
+                    ImmediateUpdateState state = scheduled[i];
+
+                    if (!state.HasPriority && !IsDue(state, now))
+                        continue;
+
+                    await PublishStateAsync(state).ConfigureAwait(false);
+                    scheduled.RemoveAt(i);
+                }
+
+                TimeSpan delay = GetNextDelay(scheduled, Stopwatch.GetTimestamp());
+                await _publisherSignal!.WaitAsync(delay).ConfigureAwait(false);
             }
+        }
+        catch (Exception exception)
+        {
+            ReportPublisherFailure(exception);
+        }
+    }
 
-            object? messageBus = serviceProvider.GetService(publisher.MessageBusType);
+    private void DrainPendingUpdates(List<ImmediateUpdateState> scheduled)
+    {
+        while (_pendingUpdates.TryDequeue(out ImmediateUpdateState? state))
+            scheduled.Add(state);
+    }
 
-            if (messageBus is null)
-                return false;
+    private async ValueTask PublishStateAsync(ImmediateUpdateState state)
+    {
+        state.ConsumePriority();
+        long publishedVersion = state.Version;
+
+        try
+        {
+            TestContext context = state.Context;
+
+            if (context.Execution.Result is not null)
+                return;
 
             string output = context.GetStandardOutput();
             string error = context.GetErrorOutput();
 
-            PublishImmediateUpdate(context, publisher.PublishInvoker, messageBus, output, error);
-
-            return true;
+            if (!string.IsNullOrEmpty(output) || !string.IsNullOrEmpty(error))
+                await PublishImmediateUpdateAsync(context, output, error).ConfigureAwait(false);
         }
-        catch
+        catch (Exception exception)
         {
-            return false;
+            ReportPublisherFailure(exception);
         }
+        finally
+        {
+            bool changed = state.CompletePublication(publishedVersion, Stopwatch.GetTimestamp());
+
+            if (changed && state.TryQueue())
+            {
+                _pendingUpdates.Enqueue(state);
+                SignalPublisher();
+            }
+        }
+    }
+
+    private async ValueTask PublishImmediateUpdateAsync(TestContext context, string output, string error)
+    {
+        IServiceProvider? serviceProvider = GetServiceProvider(context);
+
+        if (serviceProvider is null)
+            throw new InvalidOperationException("TUnit's service provider is unavailable.");
+
+        Type serviceProviderType = serviceProvider.GetType();
+        ImmediateUpdatePublisher? publisher = Volatile.Read(ref _immediateUpdatePublisher);
+
+        if (publisher is null || publisher.ServiceProviderType != serviceProviderType)
+        {
+            publisher = CreateImmediateUpdatePublisher(serviceProviderType);
+
+            if (publisher is null)
+                throw new InvalidOperationException("TUnit's live output publisher is unavailable.");
+
+            Volatile.Write(ref _immediateUpdatePublisher, publisher);
+        }
+
+        object? messageBus = serviceProvider.GetService(publisher.MessageBusType);
+
+        if (messageBus is null)
+            throw new InvalidOperationException("TUnit's message bus is unavailable.");
+
+        var node = new TestNode
+        {
+            Uid = new TestNodeUid(context.Metadata.TestDetails.TestId),
+            DisplayName = context.Metadata.DisplayName,
+            Properties = CreateProperties(output, error)
+        };
+
+        if (context.Execution.Result is not null)
+            return;
+
+        object? invocationResult = publisher.PublishInvoker.Invoke(messageBus, node);
+
+        switch (invocationResult)
+        {
+            case ValueTask valueTask:
+                await valueTask.ConfigureAwait(false);
+                break;
+            case Task task:
+                await task.ConfigureAwait(false);
+                break;
+        }
+    }
+
+    private bool IsDue(ImmediateUpdateState state, long now)
+    {
+        long interval = GetPublishInterval(state);
+
+        if (interval == 0)
+            return true;
+
+        long lastPublished = Volatile.Read(ref state.LastPublishedTimestamp);
+        return lastPublished == 0 || now - lastPublished >= interval;
+    }
+
+    private TimeSpan GetNextDelay(List<ImmediateUpdateState> scheduled, long now)
+    {
+        if (scheduled.Count == 0)
+            return Timeout.InfiniteTimeSpan;
+
+        long minimumRemaining = long.MaxValue;
+
+        foreach (ImmediateUpdateState state in scheduled)
+        {
+            if (state.HasPriority)
+                return TimeSpan.Zero;
+
+            long lastPublished = Volatile.Read(ref state.LastPublishedTimestamp);
+            long interval = GetPublishInterval(state);
+
+            if (lastPublished == 0 || interval == 0)
+                return TimeSpan.Zero;
+
+            long remaining = interval - (now - lastPublished);
+
+            if (remaining <= 0)
+                return TimeSpan.Zero;
+
+            if (remaining < minimumRemaining)
+                minimumRemaining = remaining;
+        }
+
+        double delayMilliseconds = minimumRemaining * 1000d / Stopwatch.Frequency;
+        return TimeSpan.FromMilliseconds(Math.Min(delayMilliseconds, int.MaxValue));
+    }
+
+    private long GetPublishInterval(ImmediateUpdateState state)
+    {
+        if (!state.HasPriority || _throttleTimestampTicks == 0)
+            return _throttleTimestampTicks;
+
+        return Math.Min(_throttleTimestampTicks, _priorityThrottleTimestampTicks);
     }
 
     private static ImmediateUpdatePublisher? CreateImmediateUpdatePublisher(Type serviceProviderType)
@@ -184,82 +390,90 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
             : new ImmediateUpdatePublisher(serviceProviderType, messageBusType, MethodInvoker.Create(publishMethod));
     }
 
-    private static void PublishImmediateUpdate(TestContext context, MethodInvoker publishInvoker, object messageBus,
-        string output, string error)
-    {
-        var node = new TestNode
-        {
-            Uid = new TestNodeUid(context.Metadata.TestDetails.TestId),
-            DisplayName = context.Metadata.DisplayName,
-            Properties = CreateProperties(output, error)
-        };
-
-        WaitForPublishCompletion(publishInvoker.Invoke(messageBus, node));
-
-        // JetBrains runners combine consecutive in-progress output updates. An empty follow-up
-        // node prevents the next cumulative snapshot from duplicating or replacing a channel.
-        var heartbeat = new TestNode
-        {
-            Uid = node.Uid,
-            DisplayName = node.DisplayName,
-            Properties = new PropertyBag(InProgressTestNodeStateProperty.CachedInstance)
-        };
-
-        WaitForPublishCompletion(publishInvoker.Invoke(messageBus, heartbeat));
-    }
-
-    private static void WaitForPublishCompletion(object? invocationResult)
-    {
-        switch (invocationResult)
-        {
-            case ValueTask valueTask:
-                valueTask.GetAwaiter().GetResult();
-                break;
-            case Task task:
-                task.GetAwaiter().GetResult();
-                break;
-        }
-    }
-
     private static IServiceProvider? GetServiceProvider(TestContext context)
     {
         return _serviceProviderProperty?.GetValue(context) as IServiceProvider;
     }
 
-    private static bool ShouldPublishImmediateUpdate(TestContext context, TimeSpan throttle)
+    private void SignalPublisher()
     {
-        if (throttle <= TimeSpan.Zero)
-            return true;
+        if (_publisherSignal is null)
+            return;
 
-        ImmediateUpdateState state =
-            context.StateBag.GetOrAdd(_immediateUpdateStateKey, static _ => new ImmediateUpdateState());
-        long now = DateTime.UtcNow.Ticks;
-
-        while (true)
+        try
         {
-            long previous = Volatile.Read(ref state.LastUpdateTicks);
-
-            if (previous != 0 && now - previous < throttle.Ticks)
-                return false;
-
-            if (Interlocked.CompareExchange(ref state.LastUpdateTicks, now, previous) == previous)
-                return true;
-
-            Thread.SpinWait(1);
+            _publisherSignal.Release();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (SemaphoreFullException)
+        {
         }
     }
 
-    private static void WriteToTestOutput(TestContext context, string message, int messageLength, bool isError)
+    private async ValueTask StopPublisherAsync()
     {
-        if (isError)
+        if (_publisherTask is null)
         {
-            context.Output.ErrorOutput.Write(message.AsSpan(0, messageLength));
-            context.Output.ErrorOutput.WriteLine();
+            while (Volatile.Read(ref _activeEmits) != 0)
+                await Task.Yield();
+
             return;
         }
 
-        context.Output.StandardOutput.Write(message.AsSpan(0, messageLength));
-        context.Output.StandardOutput.WriteLine();
+        SignalPublisher();
+        await _publisherTask.ConfigureAwait(false);
+        _publisherSignal!.Dispose();
+    }
+
+    private void StopPublisher()
+    {
+        if (_publisherTask is null)
+        {
+            var spinner = new SpinWait();
+
+            while (Volatile.Read(ref _activeEmits) != 0)
+                spinner.SpinOnce();
+
+            return;
+        }
+
+        SignalPublisher();
+        _publisherTask.GetAwaiter().GetResult();
+        _publisherSignal!.Dispose();
+    }
+
+    private void DisposeWriters()
+    {
+        while (_writers.TryTake(out ReusableStringWriter? writer))
+            writer.Dispose();
+    }
+
+    private void ReportPublisherFailure(Exception exception)
+    {
+        if (Interlocked.Exchange(ref _publisherFailureReported, 1) == 0)
+            SelfLog.WriteLine("TUnit live output publication failed: {0}", exception);
+    }
+
+    private static long GetThrottleTimestampTicks(TimeSpan throttle)
+    {
+        if (throttle <= TimeSpan.Zero)
+            return 0;
+
+        double timestampTicks = throttle.TotalSeconds * Stopwatch.Frequency;
+        return timestampTicks >= long.MaxValue ? long.MaxValue : Math.Max(1, (long) timestampTicks);
+    }
+
+    private static void WriteToTestOutput(TestContext context, string message, bool isError)
+    {
+        if (isError)
+        {
+            context.Output.WriteError(message);
+            return;
+        }
+
+        context.Output.WriteLine(message);
     }
 
     private static int GetMessageLengthWithoutTrailingNewLines(string message)
