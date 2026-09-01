@@ -79,10 +79,11 @@ public sealed class TUnitTestContextSinkTests
     }
 
     [Test]
-    public void Sink_should_preserve_both_output_channels()
+    public void Sink_should_preserve_log_order_in_one_output_channel()
     {
-        const string standardMarker = "STANDARD_OUTPUT_MARKER";
+        const string firstMarker = "FIRST_OUTPUT_MARKER";
         const string errorMarker = "ERROR_OUTPUT_MARKER";
+        const string lastMarker = "LAST_OUTPUT_MARKER";
 
         using Logger logger = new LoggerConfiguration()
                               .WriteTo.Sink(new TUnitTestContextSink(new TUnitTestContextSinkOptions
@@ -92,11 +93,18 @@ public sealed class TUnitTestContextSinkTests
                               }))
                               .CreateLogger();
 
-        logger.Information("{Marker}", standardMarker);
+        logger.Information("{Marker}", firstMarker);
         logger.Error("{Marker}", errorMarker);
+        logger.Information("{Marker}", lastMarker);
 
-        TestContext.Current!.GetStandardOutput().Should().Contain(standardMarker);
-        TestContext.Current.GetErrorOutput().Should().Contain(errorMarker);
+        string output = TestContext.Current!.GetStandardOutput();
+
+        output.Should().Contain(firstMarker);
+        output.Should().Contain(errorMarker);
+        output.Should().Contain(lastMarker);
+        output.IndexOf(firstMarker, StringComparison.Ordinal).Should().BeLessThan(output.IndexOf(errorMarker, StringComparison.Ordinal));
+        output.IndexOf(errorMarker, StringComparison.Ordinal).Should().BeLessThan(output.IndexOf(lastMarker, StringComparison.Ordinal));
+        TestContext.Current.GetErrorOutput().Should().NotContain(errorMarker);
     }
 
     [Test]
@@ -138,7 +146,7 @@ public sealed class TUnitTestContextSinkTests
 
         logger.Error(new InvalidOperationException("EXPECTED_EXCEPTION_TEXT"), "EXPECTED_FAILURE_MESSAGE");
 
-        TestContext.Current!.GetErrorOutput()
+        TestContext.Current!.GetStandardOutput()
                    .Should()
                    .Contain($"EXPECTED_FAILURE_MESSAGE{Environment.NewLine}System.InvalidOperationException: EXPECTED_EXCEPTION_TEXT");
     }

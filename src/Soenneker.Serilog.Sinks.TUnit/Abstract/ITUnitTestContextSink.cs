@@ -11,7 +11,7 @@ namespace Soenneker.Serilog.Sinks.TUnit.Abstract;
 public interface ITUnitTestContextSink : ILogEventSink, IAsyncDisposable, IDisposable
 {
     /// <summary>
-    /// Writes the event to the current test's error output when its level is error or higher, or to standard output otherwise.
+    /// Writes the event to the current test's standard output. All levels use the same stream so events retain their emission order.
     /// Events are ignored when there is no active <see cref="TestContext"/>.
     /// </summary>
     /// <param name="logEvent">The event being logged</param>

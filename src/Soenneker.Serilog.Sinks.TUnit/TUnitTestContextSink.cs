@@ -21,7 +21,6 @@ using System.Threading.Tasks;
 namespace Soenneker.Serilog.Sinks.TUnit;
 
 // ReSharper disable once InconsistentNaming
-/// <inheritdoc cref="ITUnitTestContextSink"/>
 public sealed class TUnitTestContextSink : ITUnitTestContextSink
 {
     private const string _defaultTemplate = "[{Timestamp:HH:mm:ss.fff} {Level:u3}] {Message:lj}";
@@ -105,11 +104,11 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
             if (messageLength != message.Length)
                 message = message[..messageLength];
 
-            bool isError = logEvent.Level >= LogEventLevel.Error;
-            WriteToTestOutput(context, message, isError);
+            bool isPriority = logEvent.Level >= LogEventLevel.Error;
+            WriteToTestOutput(context, message);
 
             if (_immediateUpdatesEnabled)
-                QueueImmediateUpdate(context, isError);
+                QueueImmediateUpdate(context, isPriority);
         }
         catch
         {
@@ -467,16 +466,7 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
         return timestampTicks >= long.MaxValue ? long.MaxValue : Math.Max(1, (long) timestampTicks);
     }
 
-    private static void WriteToTestOutput(TestContext context, string message, bool isError)
-    {
-        if (isError)
-        {
-            context.Output.WriteError(message);
-            return;
-        }
-
-        context.Output.WriteLine(message);
-    }
+    private static void WriteToTestOutput(TestContext context, string message) => context.Output.WriteLine(message);
 
     private static int GetMessageLengthWithoutTrailingNewLines(string message)
     {

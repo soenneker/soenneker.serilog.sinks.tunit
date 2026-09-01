@@ -33,7 +33,7 @@ Log.Logger = new LoggerConfiguration()
     .CreateLogger();
 ```
 
-Serilog events emitted while `TestContext.Current` is available are attached to that test. Error and fatal events go to TUnit's error output; all lower levels go to standard output.
+Serilog events emitted while `TestContext.Current` is available are attached to that test. Every level is written to TUnit's standard output so events retain their emission order. The formatted level (for example, `[ERR]`) still distinguishes errors and fatal events. Using separate standard and error streams would allow the runner to group errors after newer log events.
 
 Events emitted without an active `TestContext` are discarded. The sink does not queue them for a later test. This matters for background work that outlives the test or runs outside its execution context—await that work before the test completes if its logs are needed.
 
