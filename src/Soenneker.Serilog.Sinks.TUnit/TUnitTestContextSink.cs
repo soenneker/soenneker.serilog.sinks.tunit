@@ -1,3 +1,5 @@
+using Soenneker.Extensions.ValueTask;
+using Soenneker.Extensions.Task;
 using Microsoft.Testing.Platform.Extensions.Messages;
 using Serilog.Debugging;
 using Serilog.Events;
@@ -125,7 +127,7 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
         if (!_disposed.TrySetTrue())
             return;
 
-        await StopPublisherAsync().ConfigureAwait(false);
+        await StopPublisherAsync().NoSync();
         DisposeWriters();
     }
 
@@ -197,7 +199,7 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
                 {
                     for (int i = scheduled.Count - 1; i >= 0; i--)
                     {
-                        await PublishStateAsync(scheduled[i]).ConfigureAwait(false);
+                        await PublishStateAsync(scheduled[i]).NoSync();
                         scheduled.RemoveAt(i);
                     }
 
@@ -208,7 +210,7 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
                         if (Volatile.Read(ref _activeEmits) == 0)
                             break;
 
-                        await _publisherSignal!.WaitAsync().ConfigureAwait(false);
+                        await _publisherSignal!.WaitAsync().NoSync();
                     }
 
                     continue;
@@ -223,12 +225,12 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
                     if (!state.HasPriority && !IsDue(state, now))
                         continue;
 
-                    await PublishStateAsync(state).ConfigureAwait(false);
+                    await PublishStateAsync(state).NoSync();
                     scheduled.RemoveAt(i);
                 }
 
                 TimeSpan delay = GetNextDelay(scheduled, Stopwatch.GetTimestamp());
-                await _publisherSignal!.WaitAsync(delay).ConfigureAwait(false);
+                await _publisherSignal!.WaitAsync(delay).NoSync();
             }
         }
         catch (Exception exception)
@@ -259,7 +261,7 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
             string error = context.GetErrorOutput();
 
             if (!string.IsNullOrEmpty(output) || !string.IsNullOrEmpty(error))
-                await PublishImmediateUpdateAsync(context, output, error).ConfigureAwait(false);
+                await PublishImmediateUpdateAsync(context, output, error).NoSync();
         }
         catch (Exception exception)
         {
@@ -317,10 +319,10 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
         switch (invocationResult)
         {
             case ValueTask valueTask:
-                await valueTask.ConfigureAwait(false);
+                await valueTask.NoSync();
                 break;
             case Task task:
-                await task.ConfigureAwait(false);
+                await task.NoSync();
                 break;
         }
     }
@@ -423,7 +425,7 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
         }
 
         SignalPublisher();
-        await _publisherTask.ConfigureAwait(false);
+        await _publisherTask.NoSync();
         _publisherSignal!.Dispose();
     }
 
