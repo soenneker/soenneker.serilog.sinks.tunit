@@ -11,7 +11,7 @@ namespace Soenneker.Serilog.Sinks.TUnit.Tests;
 public sealed class TUnitTestContextSinkTests
 {
     [Test]
-    public async Task Sink_should_emit_messages_every_second()
+    public async ValueTask Sink_should_emit_messages_every_second()
     {
         const int iterations = 5;
         var stopwatch = Stopwatch.StartNew();
