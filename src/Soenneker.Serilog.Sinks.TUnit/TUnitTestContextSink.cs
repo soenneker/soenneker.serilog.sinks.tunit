@@ -40,31 +40,48 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
     private readonly SemaphoreSlim? _publisherSignal;
     private readonly Task? _publisherTask;
 
+    private readonly Func<Type, ImmediateUpdatePublisher?>? _createPublisher;
+    private readonly Func<TestContext, string, string, ValueTask>? _outputPublisher;
     private ImmediateUpdatePublisher? _immediateUpdatePublisher;
     private ValueAtomicBool _disposed;
     private int _activeEmits;
     private int _publisherFailureReported;
 
+    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("The default live-output adapter discovers TUnit internals. Supply an explicit output publisher when trimming.")]
     public TUnitTestContextSink() : this(new MessageTemplateTextFormatter(_defaultTemplate, null),
         new TUnitTestContextSinkOptions(), true)
     {
     }
 
+    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("The default live-output adapter discovers TUnit internals. Supply an explicit output publisher when trimming.")]
     public TUnitTestContextSink(ITextFormatter formatter) : this(formatter, new TUnitTestContextSinkOptions(), false)
     {
     }
 
+    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("The default live-output adapter discovers TUnit internals. Supply an explicit output publisher when trimming.")]
     public TUnitTestContextSink(TUnitTestContextSinkOptions options) : this(
         new MessageTemplateTextFormatter(_defaultTemplate, null), options, true)
     {
     }
 
+    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("The default live-output adapter discovers TUnit internals. Supply an explicit output publisher when trimming.")]
     public TUnitTestContextSink(ITextFormatter formatter, TUnitTestContextSinkOptions options) : this(formatter, options, false)
     {
     }
 
+    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("The default live-output adapter discovers TUnit internals. Supply an explicit output publisher when trimming.")]
     private TUnitTestContextSink(ITextFormatter formatter, TUnitTestContextSinkOptions options, bool appendException)
+        : this(formatter, options, appendException, CreateImmediateUpdatePublisher, null) { }
+
+    public TUnitTestContextSink(ITextFormatter formatter, TUnitTestContextSinkOptions options,
+        Func<TestContext, string, string, ValueTask> outputPublisher)
+        : this(formatter, options, false, null, outputPublisher ?? throw new ArgumentNullException(nameof(outputPublisher))) { }
+
+    private TUnitTestContextSink(ITextFormatter formatter, TUnitTestContextSinkOptions options, bool appendException,
+        Func<Type, ImmediateUpdatePublisher?>? createPublisher, Func<TestContext, string, string, ValueTask>? outputPublisher)
     {
+        _createPublisher = createPublisher;
+        _outputPublisher = outputPublisher;
         _formatter = formatter ?? throw new ArgumentNullException(nameof(formatter));
         ArgumentNullException.ThrowIfNull(options);
 
@@ -281,6 +298,12 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
 
     private async ValueTask PublishImmediateUpdateAsync(TestContext context, string output, string error)
     {
+        if (_outputPublisher is not null)
+        {
+            if (context.Execution.Result is null)
+                await _outputPublisher(context, output, error).NoSync();
+            return;
+        }
         IServiceProvider? serviceProvider = GetServiceProvider(context);
 
         if (serviceProvider is null)
@@ -291,7 +314,7 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
 
         if (publisher is null || publisher.ServiceProviderType != serviceProviderType)
         {
-            publisher = CreateImmediateUpdatePublisher(serviceProviderType);
+            publisher = _createPublisher!(serviceProviderType);
 
             if (publisher is null)
                 throw new InvalidOperationException("TUnit's live output publisher is unavailable.");
@@ -377,6 +400,7 @@ public sealed class TUnitTestContextSink : ITUnitTestContextSink
         return Math.Min(_throttleTimestampTicks, _priorityThrottleTimestampTicks);
     }
 
+    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("The default live-output adapter discovers TUnit internals. Supply an explicit output publisher when trimming.")]
     private static ImmediateUpdatePublisher? CreateImmediateUpdatePublisher(Type serviceProviderType)
     {
         Type? messageBusType = serviceProviderType.Assembly.GetType("TUnit.Engine.TUnitMessageBus");

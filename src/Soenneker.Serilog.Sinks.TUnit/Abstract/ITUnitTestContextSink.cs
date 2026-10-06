@@ -8,6 +8,7 @@ namespace Soenneker.Serilog.Sinks.TUnit.Abstract;
 /// <summary>
 /// A Serilog sink that writes formatted events to the active TUnit <see cref="TestContext"/>.
 /// </summary>
+/// <remarks>For trimmed consumers, construct the sink with an explicit live-output publisher delegate.</remarks>
 public interface ITUnitTestContextSink : ILogEventSink, IAsyncDisposable, IDisposable
 {
     /// <summary>
