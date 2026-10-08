@@ -5,13 +5,14 @@ using System.Diagnostics;
 using System.Linq;
 using System.Threading.Tasks;
 using Serilog.Core;
+using System.Threading;
 
 namespace Soenneker.Serilog.Sinks.TUnit.Tests;
 
 public sealed class TUnitTestContextSinkTests
 {
     [Test]
-    public async ValueTask Sink_should_emit_messages_every_second()
+    public async ValueTask Sink_should_emit_messages_every_second(CancellationToken cancellationToken)
     {
         const int iterations = 5;
         var stopwatch = Stopwatch.StartNew();
@@ -28,7 +29,7 @@ public sealed class TUnitTestContextSinkTests
         for (var i = 1; i <= iterations; i++)
         {
             logger.Information("Heartbeat {Iteration}/{Total} at {ElapsedMs} ms", i, iterations, stopwatch.ElapsedMilliseconds);
-            await Task.Delay(TimeSpan.FromSeconds(1));
+            await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken: cancellationToken);
         }
 
         stopwatch.Stop();
