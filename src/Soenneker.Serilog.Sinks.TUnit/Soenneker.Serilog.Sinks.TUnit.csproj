@@ -52,7 +52,7 @@
         <PackageReference Include="Soenneker.Utils.ReusableStringWriter" Version="4.0.30" />
         <PackageReference Include="Soenneker.Atomics.ValueBools" Version="4.0.47" />
         <PackageReference Include="TUnit.Core" Version="1.74.0" />
-        <PackageReference Include="Soenneker.Extensions.Task" Version="4.0.133" />
+        <PackageReference Include="Soenneker.Extensions.Task" Version="4.0.134" />
         <PackageReference Include="Soenneker.Extensions.ValueTask" Version="4.0.126" />
     </ItemGroup>
 </Project>
