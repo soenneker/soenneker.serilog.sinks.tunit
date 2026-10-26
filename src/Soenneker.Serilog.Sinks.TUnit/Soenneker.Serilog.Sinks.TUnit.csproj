@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
-        <TargetFramework>net10.0</TargetFramework>
+        <TargetFramework>net11.0</TargetFramework>
         <Nullable>enable</Nullable>
         <Platforms>AnyCPU</Platforms>
         <NoWarn>$(NoWarn);1591</NoWarn>
@@ -8,7 +8,7 @@
 
     <PropertyGroup>
         <Description>A Serilog sink for logging within TUnit</Description>
-        <Version Condition="'$(BUILD_VERSION)' == ''">4.0.0</Version>
+        <Version Condition="'$(BUILD_VERSION)' == ''">11.0.0</Version>
         <Version Condition="'$(BUILD_VERSION)' != ''">$(BUILD_VERSION)</Version>
         <AssemblyName>Soenneker.Serilog.Sinks.TUnit</AssemblyName>
         <PackageId>Soenneker.Serilog.Sinks.TUnit</PackageId>
@@ -52,7 +52,7 @@
         <PackageReference Include="Serilog" Version="4.4.0" />
         <PackageReference Include="Soenneker.Utils.ReusableStringWriter" Version="4.0.38" />
         <PackageReference Include="Soenneker.Atomics.ValueBools" Version="4.0.54" />
-        <PackageReference Include="TUnit.Core" Version="1.76.0" />
+        <PackageReference Include="TUnit.Core" Version="1.76.28" />
         <PackageReference Include="Soenneker.Extensions.Task" Version="4.0.140" />
         <PackageReference Include="Soenneker.Extensions.ValueTask" Version="4.0.133" />
     </ItemGroup>
