@@ -52,7 +52,7 @@
         <PackageReference Include="Serilog" Version="4.4.0" />
         <PackageReference Include="Soenneker.Utils.ReusableStringWriter" Version="11.0.40" />
         <PackageReference Include="Soenneker.Atomics.ValueBools" Version="11.0.56" />
-        <PackageReference Include="TUnit.Core" Version="1.83.8" />
+        <PackageReference Include="TUnit.Core" Version="1.84.0" />
         <PackageReference Include="Soenneker.Extensions.Task" Version="11.0.143" />
         <PackageReference Include="Soenneker.Extensions.ValueTask" Version="11.0.136" />
     </ItemGroup>
