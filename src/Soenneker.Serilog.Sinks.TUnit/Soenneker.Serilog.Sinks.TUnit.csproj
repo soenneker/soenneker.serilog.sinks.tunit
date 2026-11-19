@@ -50,10 +50,10 @@
     <ItemGroup>
         <PackageReference Include="Microsoft.Testing.Platform" Version="2.5.3" />
         <PackageReference Include="Serilog" Version="4.4.0" />
-        <PackageReference Include="Soenneker.Utils.ReusableStringWriter" Version="11.0.40" />
+        <PackageReference Include="Soenneker.Utils.ReusableStringWriter" Version="11.0.42" />
         <PackageReference Include="Soenneker.Atomics.ValueBools" Version="11.0.57" />
         <PackageReference Include="TUnit.Core" Version="1.87.0" />
-        <PackageReference Include="Soenneker.Extensions.Task" Version="11.0.143" />
+        <PackageReference Include="Soenneker.Extensions.Task" Version="11.0.144" />
         <PackageReference Include="Soenneker.Extensions.ValueTask" Version="11.0.137" />
     </ItemGroup>
 </Project>
